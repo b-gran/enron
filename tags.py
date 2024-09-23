@@ -92,7 +92,10 @@ async def parse_openai(system_prompt: str, user_prompt: str):
     except Exception as e:
         return {
             'result': None,
-            'error': e
+            'error': {
+                'status_code': getattr(e, 'status_code', -1),
+                'msg': str(e),
+            }
         }
 
 async def pass_result(result: dict) -> dict:
@@ -113,7 +116,7 @@ async def process_batch(batch, system_prompt):
 async def run_batches(
     df: pd.DataFrame,
     system_prompt: str,
-    batch_size: int = 5000,
+    batch_size: int = 3500,
     concurrency: int = 50,
     final_file_template: str = 'final-{id}.joblib',
     checkpoint_file_template: str = 'checkpoint-{id}.joblib',
@@ -129,6 +132,7 @@ async def run_batches(
     total_tasks = len(df)
     
     for start in tqdm.tqdm(range(0, total_tasks, batch_size)):
+        start_time = time.time()
         end = min(start + batch_size, total_tasks)
         batch = df[start:end]
 
@@ -143,6 +147,17 @@ async def run_batches(
                 return await process_batch(batch, system_prompt)
         
         batch_results = await process_batch_with_semaphore(batch)
+        end_time = time.time()
+
+        batch_tokens = batch['token_count_total'].sum()
+        tokens_per_minute = batch_tokens / ((end_time - start_time) / 60)
+
+        if tokens_per_minute > 2e6:
+            print('WARNING: High token usage detected:', tokens_per_minute, 'tokens per minute')
+            wait_duration = min(60, (60 / 2e6) * batch_tokens - (end_time - start_time))
+            print(f'Sleeping for {wait_duration} to minimize rate limiting...')
+            await asyncio.sleep(wait_duration)
+
         all_results.extend(batch_results)
 
         num_errors = len([r for r in batch_results if r['error']])
@@ -155,7 +170,7 @@ async def run_batches(
         with open(tmp_file, 'wb') as f:
             partial_df = df.copy()
             partial_df['result'] = all_results + [None] * (total_tasks - len(all_results))
-            joblib.dump(all_results, f)
+            joblib.dump(partial_df, f)
 
         os.rename(tmp_file, checkpoint_file)
 
@@ -192,6 +207,9 @@ def cli(input: str, limit: int | None):
 
     df['content_no_attachment'] = df['content'].parallel_apply(remove_attachment_content)
     df['user_prompt'] = df['content_no_attachment'].apply(lambda x: email_content.format(content=x))
+
+    if 'result' not in df.columns:
+        df['result'] = None
 
     print()
     print()
