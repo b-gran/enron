@@ -75,40 +75,41 @@ class ParseResult(BaseModel):
     tags: list[str]
 
 
-async def parse_openai(system_prompt: str, user_prompt: str):
-    try:
-        completion = await client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format=ParseResult,
-        )
-        return {
-            'result': completion.choices[0].message.parsed,
-            'error': None
-        }
-    except Exception as e:
-        return {
-            'result': None,
-            'error': {
-                'status_code': getattr(e, 'status_code', -1),
-                'msg': str(e),
+async def parse_openai(system_prompt: str, user_prompt: str, _semaphore):
+    async with _semaphore:
+        try:
+            completion = await client.beta.chat.completions.parse(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=ParseResult,
+            )
+            return {
+                'result': completion.choices[0].message.parsed,
+                'error': None
             }
-        }
+        except Exception as e:
+            return {
+                'result': None,
+                'error': {
+                    'status_code': getattr(e, 'status_code', -1),
+                    'msg': str(e),
+                }
+            }
 
 async def pass_result(result: dict) -> dict:
     return result
 
         
-async def process_batch(batch, system_prompt):
+async def process_batch(batch, system_prompt, _semaphore):
     tasks = []
     for _, row in batch.iterrows():
         if row['result'] and not pd.isna(row['result']) and not row['result']['error']:
             task = asyncio.create_task(pass_result(row['result']))
         else:
-            task = asyncio.create_task(parse_openai(system_prompt, row['user_prompt']))
+            task = asyncio.create_task(parse_openai(system_prompt, row['user_prompt'], _semaphore))
         tasks.append(task)
     return await asyncio.gather(*tasks)
 
@@ -130,6 +131,8 @@ async def run_batches(
 
     all_results = []
     total_tasks = len(df)
+
+    semaphore = asyncio.Semaphore(concurrency)
     
     for start in tqdm.tqdm(range(0, total_tasks, batch_size)):
         start_time = time.time()
@@ -140,26 +143,19 @@ async def run_batches(
 
         print(f'Skipping {len(already_done)} already completed tasks in batch {start}-{end}')
 
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def process_batch_with_semaphore(batch: pd.DataFrame):
-            async with semaphore:
-                return await process_batch(batch, system_prompt)
-        
-        batch_results = await process_batch_with_semaphore(batch)
+        batch_results = await process_batch(batch, system_prompt, semaphore)
         end_time = time.time()
+
+        print('Finished in ', end_time - start_time, 'seconds')
 
         batch_tokens = batch[
             # only count tokens for tasks that were not already completed
             batch['result'].apply(lambda x: False if x and not pd.isna(x) and not x['error'] else True)
-        ]
+        ]['token_count_total'].sum()
         tokens_per_minute = batch_tokens / ((end_time - start_time) / 60)
 
-        if tokens_per_minute > 2e6:
-            print('WARNING: High token usage detected:', tokens_per_minute, 'tokens per minute')
-            wait_duration = min(60, (60 / 2e6) * batch_tokens - (end_time - start_time))
-            print(f'Sleeping for {wait_duration} to minimize rate limiting...')
-            await asyncio.sleep(wait_duration)
+        print('Tokens used:', batch_tokens)
+        print('Tokens per minute:', tokens_per_minute)
 
         all_results.extend(batch_results)
 
@@ -176,6 +172,12 @@ async def run_batches(
             joblib.dump(partial_df, f)
 
         os.rename(tmp_file, checkpoint_file)
+
+        if tokens_per_minute > 2e6:
+            print('WARNING: High token usage detected')
+            wait_duration = min(60, (60 / 2e6) * batch_tokens - (end_time - start_time))
+            print(f'Sleeping for {wait_duration} to minimize rate limiting...')
+            await asyncio.sleep(wait_duration)
 
     print('Writing final results to', final_file)
     final_df = df.copy()
