@@ -19,7 +19,7 @@ import tqdm
 env_path = '/Users/bill/experiments/enron-analysis/secrets.env'
 
 load_dotenv(dotenv_path=env_path)
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("BILL_OPENAI_API_KEY"))
 
 
 GPT_ENCODING = tiktoken.encoding_for_model('gpt-4o-mini')
