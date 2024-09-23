@@ -149,7 +149,10 @@ async def run_batches(
         batch_results = await process_batch_with_semaphore(batch)
         end_time = time.time()
 
-        batch_tokens = batch['token_count_total'].sum()
+        batch_tokens = batch[
+            # only count tokens for tasks that were not already completed
+            batch['result'].apply(lambda x: False if x and not pd.isna(x) and not x['error'] else True)
+        ]
         tokens_per_minute = batch_tokens / ((end_time - start_time) / 60)
 
         if tokens_per_minute > 2e6:
