@@ -116,9 +116,9 @@ def create_tsne_image_grid_with_hulls(
     tsne_results,
     image_paths,
     db,
-    output_size=(6000, 6000),
-    thumbnail_size=(100, 100),
-    scale=1.1, 
+    output_size=(9000, 9000),
+    thumbnail_size=(256, 256),
+    scale=1.25, 
     padding="scale", 
     n_interpolate=100, 
     interpolation="quadratic_periodic", 
@@ -137,26 +137,13 @@ def create_tsne_image_grid_with_hulls(
     x_norm = (tsne_results[:, 0] - tsne_results[:, 0].min()) / (tsne_results[:, 0].max() - tsne_results[:, 0].min())
     y_norm = (tsne_results[:, 1] - tsne_results[:, 1].min()) / (tsne_results[:, 1].max() - tsne_results[:, 1].min())
 
-    # Create a large white canvas
-    canvas = Image.new('RGB', output_size, color='white')
-
-    # draw each cluster hull
-    xynorm = np.stack([x_norm, y_norm], axis=1)
-    points_by_cluster = {cluster: xynorm[db.labels_ == cluster] for cluster in set(db.labels_)}
-    color_map = get_color_map(set(db.labels_), cmap_name=cmap_name)
-    for cluster in points_by_cluster:
-        if cluster != -1:
-            hull = calculate_hull(points_by_cluster[cluster], scale=scale, padding=padding, n_interpolate=n_interpolate, interpolation=interpolation)
-            hull = hull * np.array(output_size)
-            hull = hull.astype(int)
-            color = tuple(int(x * 255) for x in color_map[cluster])
-            ImageDraw.Draw(canvas).polygon([tuple(p) for p in hull], outline=color, fill=(*color[:3], 128), width=10)
+    canvas = Image.new('RGBA', output_size, color=(255, 255, 255, 255))
 
     # draw images on top
     for i, img_path in enumerate(image_paths):
         try:
             # Open and resize the image
-            img = Image.open(img_path)
+            img = Image.open(img_path).convert('RGBA')
             img.thumbnail(thumbnail_size, Image.LANCZOS)
 
             # Calculate position
@@ -164,9 +151,30 @@ def create_tsne_image_grid_with_hulls(
             y_pos = int(y_norm[i] * (output_size[1] - thumbnail_size[1]))
 
             # Paste the thumbnail onto the canvas
-            canvas.paste(img, (x_pos, y_pos))
+            canvas.alpha_composite(img, (x_pos, y_pos))
         except Exception as e:
             print(f"Error processing image {img_path}: {e}")
+
+    # draw each cluster hull
+    xynorm = np.stack([x_norm, y_norm], axis=1)
+    points_by_cluster = {cluster: xynorm[db.labels_ == cluster] for cluster in set(db.labels_)}
+    color_map = get_color_map(set(db.labels_), cmap_name=cmap_name)
+
+    # Create a separate transparent layer for the polygons
+    polygon_layer = Image.new('RGBA', output_size, color=(255, 255, 255, 0))
+    draw = ImageDraw.Draw(polygon_layer)
+
+    for cluster in points_by_cluster:
+        if cluster != -1:
+            hull = calculate_hull(points_by_cluster[cluster], scale=scale, padding=padding, n_interpolate=n_interpolate, interpolation=interpolation)
+            hull = hull * np.array(output_size)
+            hull = hull.astype(int)
+            color = tuple(int(x * 255) for x in color_map[cluster])
+            draw.polygon([tuple(p) for p in hull], outline=color, fill=(*color[:3], 32), width=30)
+
+    # Composite the polygon layer onto the main canvas
+    canvas = Image.alpha_composite(canvas, polygon_layer)
+
 
     return canvas
 
@@ -188,7 +196,7 @@ def cli(input: str, output: str):
     X_embedded = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=30).fit_transform(X)
 
     print('Clustering...')
-    db = DBSCAN(eps=5.0, min_samples=30, metric='euclidean').fit(X_embedded)
+    db = DBSCAN(eps=4.75, min_samples=30, metric='euclidean').fit(X_embedded)
 
     print('Creating image...')
     img = create_tsne_image_grid_with_hulls(X_embedded, df['final_path'], db)

@@ -17,6 +17,7 @@ from PIL import Image
 
 import torch
 from transformers import BlipProcessor, BlipForConditionalGeneration
+from transformers.models.blip.modeling_blip import BaseModelOutputWithPooling
 
 from pandarallel import pandarallel
 pandarallel.initialize(progress_bar=True)
@@ -109,26 +110,30 @@ def get_valid_images(deduped_media_files: pd.DataFrame):
     return deduped_media_images
 
 
-def get_embeddings_for_paths(image_paths: list[str], device: str = 'mps') -> torch.Tensor:
+def get_embeddings_for_paths(image_paths: list[str], device: str = 'mps') -> BaseModelOutputWithPooling:
     processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
     model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large").to(device)
     images = [Image.open(image_path).convert("RGB") for image_path in image_paths]
     inputs = processor(images, return_tensors="pt").to(device)
     with torch.no_grad():
         vision_outs = model.vision_model(**inputs)
-    return vision_outs.pooler_output
+    return vision_outs
 
-def get_embeddings(deduped_media_images: pd.DataFrame, chunk_size: int = 50, device: str = 'mps') -> list[np.array]:
-    embeddings = []
+def get_embeddings(deduped_media_images: pd.DataFrame, chunk_size: int = 50, device: str = 'mps') -> tuple[list[np.array], list[np.array]]:
+    pooler_outputs = []
+    hidden_states = []
     for chunk_df in tqdm.tqdm(np.array_split(deduped_media_images, math.ceil(len(deduped_media_images) / chunk_size))):
-        embeddings.extend(get_embeddings_for_paths(chunk_df['final_path'].tolist(), device=device).cpu().numpy())
-    return embeddings
+        outs = get_embeddings_for_paths(chunk_df['final_path'].tolist(), device=device)
+        pooler_outputs.extend(outs.pooler_output.cpu().numpy())
+        hidden_states.extend(outs[0].cpu().numpy())
+    return pooler_outputs, hidden_states
 
 @click.command()
 @click.option('--enron-root', type=click.Path(file_okay=False, exists=True), required=True)
 @click.option('--media-dir', type=click.Path(), required=True)
 @click.option('--output-path', type=click.Path(), required=True)
-def dump_images_with_embeddings(enron_root: str, media_dir: str, output_path: str):
+@click.option('--hidden', is_flag=True, default=False)
+def dump_images_with_embeddings(enron_root: str, media_dir: str, output_path: str, hidden: bool):
     print('Listing files...')
     files_df = get_files_df(enron_root)
 
@@ -142,8 +147,10 @@ def dump_images_with_embeddings(enron_root: str, media_dir: str, output_path: st
 
     print()
     print('Generating embeddings...')
-    embeddings = get_embeddings(images_df)
-    images_df['embedding'] = embeddings
+    pooler_embeddings, hidden_states = get_embeddings(images_df)
+    images_df['embedding'] = pooler_embeddings
+    if hidden:
+        images_df['hidden_states'] = hidden_states
 
     print()
     print('Writing to disk...')
