@@ -95,11 +95,17 @@ async def parse_openai(system_prompt: str, user_prompt: str):
             'error': e
         }
 
+async def pass_result(result: dict) -> dict:
+    return result
+
         
 async def process_batch(batch, system_prompt):
     tasks = []
-    for prompt in batch['user_prompt']:
-        task = asyncio.create_task(parse_openai(system_prompt, prompt))
+    for _, row in batch.iterrows():
+        if row['result'] and not pd.isna(row['result']) and not row['result']['error']:
+            task = asyncio.create_task(pass_result(row['result']))
+        else:
+            task = asyncio.create_task(parse_openai(system_prompt, row['user_prompt']))
         tasks.append(task)
     return await asyncio.gather(*tasks)
 
@@ -108,7 +114,7 @@ async def run_batches(
     df: pd.DataFrame,
     system_prompt: str,
     batch_size: int = 5000,
-    concurrency: int = 100,
+    concurrency: int = 50,
     final_file_template: str = 'final-{id}.joblib',
     checkpoint_file_template: str = 'checkpoint-{id}.joblib',
     tmp_file_template = 'tmp-{id}.joblib',
@@ -125,6 +131,10 @@ async def run_batches(
     for start in tqdm.tqdm(range(0, total_tasks, batch_size)):
         end = min(start + batch_size, total_tasks)
         batch = df[start:end]
+
+        already_done = [r for r in batch['result'] if r and not pd.isna(r) and not r['error']]
+
+        print(f'Skipping {len(already_done)} already completed tasks in batch {start}-{end}')
 
         semaphore = asyncio.Semaphore(concurrency)
 
@@ -143,6 +153,8 @@ async def run_batches(
             print(sample_error['error'])
         
         with open(tmp_file, 'wb') as f:
+            partial_df = df.copy()
+            partial_df['result'] = all_results + [None] * (total_tasks - len(all_results))
             joblib.dump(all_results, f)
 
         os.rename(tmp_file, checkpoint_file)
