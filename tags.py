@@ -117,7 +117,7 @@ async def process_batch(batch, system_prompt, _semaphore):
 async def run_batches(
     df: pd.DataFrame,
     system_prompt: str,
-    batch_size: int = 3500,
+    batch_size: int = 3000,
     concurrency: int = 50,
     final_file_template: str = 'final-{id}.joblib',
     checkpoint_file_template: str = 'checkpoint-{id}.joblib',
@@ -173,7 +173,7 @@ async def run_batches(
 
         os.rename(tmp_file, checkpoint_file)
 
-        if tokens_per_minute > 2e6:
+        if batch_tokens > 1e5 and tokens_per_minute > 2e6:
             print('WARNING: High token usage detected')
             wait_duration = min(60, (60 / 2e6) * batch_tokens - (end_time - start_time))
             print(f'Sleeping for {wait_duration} to minimize rate limiting...')
