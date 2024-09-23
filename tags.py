@@ -98,7 +98,7 @@ def parse_openai(system_prompt: str, user_prompt: str):
 def run_batches(
     df: pd.DataFrame,
     system_prompt: str,
-    batch_size: int = 10,
+    batch_size: int = 5000,
     final_file_template: str = 'final-{id}.joblib',
     checkpoint_file_template: str = 'checkpoint-{id}.joblib',
     tmp_file_template = 'tmp-{id}.joblib',
@@ -141,7 +141,7 @@ def run_batches(
 
 @click.command()
 @click.option('-i', '--input', help='Path to input joblib containing the enron dataframe', required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option('--limit', type=int, default=50, help='Limit the number of rows to process for testing')
+@click.option('--limit', type=int, help='Limit the number of rows to process for testing')
 def cli(input: str, limit: int | None):
     from pandarallel import pandarallel
     pandarallel.initialize(progress_bar=True)
