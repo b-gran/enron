@@ -1,3 +1,4 @@
+import asyncio
 import re
 import sys
 import time
@@ -9,7 +10,7 @@ import multiprocessing as mp
 from typing import List, Any
 
 from pydantic import BaseModel
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 import os
 from dotenv import load_dotenv
@@ -18,7 +19,7 @@ import tqdm
 env_path = '/Users/bill/experiments/enron-analysis/secrets.env'
 
 load_dotenv(dotenv_path=env_path)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 GPT_ENCODING = tiktoken.encoding_for_model('gpt-4o-mini')
@@ -74,9 +75,9 @@ class ParseResult(BaseModel):
     tags: list[str]
 
 
-def parse_openai(system_prompt: str, user_prompt: str):
+async def parse_openai(system_prompt: str, user_prompt: str):
     try:
-        completion = client.beta.chat.completions.parse(
+        completion = await client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -94,11 +95,20 @@ def parse_openai(system_prompt: str, user_prompt: str):
             'error': e
         }
 
+        
+async def process_batch(batch, system_prompt):
+    tasks = []
+    for prompt in batch['user_prompt']:
+        task = asyncio.create_task(parse_openai(system_prompt, prompt))
+        tasks.append(task)
+    return await asyncio.gather(*tasks)
 
-def run_batches(
+
+async def run_batches(
     df: pd.DataFrame,
     system_prompt: str,
     batch_size: int = 5000,
+    concurrency: int = 100,
     final_file_template: str = 'final-{id}.joblib',
     checkpoint_file_template: str = 'checkpoint-{id}.joblib',
     tmp_file_template = 'tmp-{id}.joblib',
@@ -112,27 +122,30 @@ def run_batches(
     all_results = []
     total_tasks = len(df)
     
-    with mp.Pool(processes=5) as pool:
-        for start in tqdm.tqdm(range(0, total_tasks, batch_size)):
-            end = min(start + batch_size, total_tasks)
-            batch = df[start:end]
+    for start in tqdm.tqdm(range(0, total_tasks, batch_size)):
+        end = min(start + batch_size, total_tasks)
+        batch = df[start:end]
 
-            args = [(system_prompt, prompt) for prompt in batch['user_prompt'].tolist()]
-            
-            batch_results = list(pool.starmap(parse_openai, args))
-            all_results.extend(batch_results)
+        semaphore = asyncio.Semaphore(concurrency)
 
-            num_errors = len([r for r in batch_results if r['error']])
-            print(f'Batch {start}-{end} completed. Errors: {num_errors}')
-            if num_errors:
-                sample_error = [r for r in batch_results if r['error']][0]
-                print('Sample error:')
-                print(sample_error['error'])
-            
-            with open(tmp_file, 'wb') as f:
-                joblib.dump(all_results, f)
+        async def process_batch_with_semaphore(batch: pd.DataFrame):
+            async with semaphore:
+                return await process_batch(batch, system_prompt)
+        
+        batch_results = await process_batch_with_semaphore(batch)
+        all_results.extend(batch_results)
 
-            os.rename(tmp_file, checkpoint_file)
+        num_errors = len([r for r in batch_results if r['error']])
+        print(f'Batch {start}-{end} completed. Errors: {num_errors}')
+        if num_errors:
+            sample_error = [r for r in batch_results if r['error']][0]
+            print('Sample error:')
+            print(sample_error['error'])
+        
+        with open(tmp_file, 'wb') as f:
+            joblib.dump(all_results, f)
+
+        os.rename(tmp_file, checkpoint_file)
 
     print('Writing final results to', final_file)
     final_df = df.copy()
@@ -192,7 +205,7 @@ def cli(input: str, limit: int | None):
         print('Exiting.')
         return sys.exit(1)
 
-    run_batches(df, system_prompt)
+    asyncio.run(run_batches(df, system_prompt))
 
 
 if __name__ == '__main__':
