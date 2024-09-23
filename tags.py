@@ -121,6 +121,13 @@ def run_batches(
             
             batch_results = list(pool.starmap(parse_openai, args))
             all_results.extend(batch_results)
+
+            num_errors = len([r for r in batch_results if r['error']])
+            print(f'Batch {start}-{end} completed. Errors: {num_errors}')
+            if num_errors:
+                sample_error = [r for r in batch_results if r['error']][0]
+                print('Sample error:')
+                print(sample_error['error'])
             
             with open(tmp_file, 'wb') as f:
                 joblib.dump(all_results, f)
