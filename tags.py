@@ -168,6 +168,7 @@ async def run_batches(
         
         with open(tmp_file, 'wb') as f:
             partial_df = df.copy()
+            # wow this is horrible. this deletes results column in "the future" if we're resuming from a partial run
             partial_df['result'] = all_results + [None] * (total_tasks - len(all_results))
             joblib.dump(partial_df, f)
 
