@@ -1,0 +1,8 @@
+.venv
+enron_clean.csv
+secrets.env
+outputs
+yahoo
+__pycache__
+*.joblib
+.DS_Store
