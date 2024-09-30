@@ -1,6 +1,6 @@
 # Exploratory analysis of the attachments in the Enron email corpus
 
-![/Users/bill/experiments/enron-analysis/enron-all-blurred.png]
+![enron-all-blurred.png]
 
 ### Usage
 
